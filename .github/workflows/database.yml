@@ -1,0 +1,132 @@
+name: Database
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'database/**'
+      - 'app/Models/**'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'database/**'
+      - 'app/Models/**'
+
+jobs:
+  migration-test:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: flight_data_test
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: flight_data_test
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready" --health-interval=10s --health-timeout=5s --health-retries=3
+
+    strategy:
+      matrix:
+        database: [mysql, pgsql, sqlite]
+        include:
+          - database: mysql
+            db_connection: mysql
+            db_host: 127.0.0.1
+            db_port: 3306
+            db_database: flight_data_test
+            db_username: root
+            db_password: password
+          - database: pgsql
+            db_connection: pgsql
+            db_host: 127.0.0.1
+            db_port: 5432
+            db_database: flight_data_test
+            db_username: postgres
+            db_password: password
+          - database: sqlite
+            db_connection: sqlite
+            db_database: database/database.sqlite
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: 8.2
+        extensions: dom, curl, libxml, mbstring, zip, pcntl, pdo, sqlite, pdo_sqlite, bcmath, soap, intl, gd, exif, iconv, imagick, mysql, pdo_mysql, pgsql, pdo_pgsql
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    - name: Copy .env
+      run: php -r "file_exists('.env') || copy('.env.example', '.env');"
+
+    - name: Generate key
+      run: php artisan key:generate
+
+    - name: Create SQLite Database
+      if: matrix.database == 'sqlite'
+      run: |
+        mkdir -p database
+        touch database/database.sqlite
+
+    - name: Run Migrations
+      env:
+        DB_CONNECTION: ${{ matrix.db_connection }}
+        DB_HOST: ${{ matrix.db_host }}
+        DB_PORT: ${{ matrix.db_port }}
+        DB_DATABASE: ${{ matrix.db_database }}
+        DB_USERNAME: ${{ matrix.db_username }}
+        DB_PASSWORD: ${{ matrix.db_password }}
+      run: php artisan migrate --force
+
+    - name: Rollback Migrations
+      env:
+        DB_CONNECTION: ${{ matrix.db_connection }}
+        DB_HOST: ${{ matrix.db_host }}
+        DB_PORT: ${{ matrix.db_port }}
+        DB_DATABASE: ${{ matrix.db_database }}
+        DB_USERNAME: ${{ matrix.db_username }}
+        DB_PASSWORD: ${{ matrix.db_password }}
+      run: php artisan migrate:rollback --force
+
+    - name: Re-run Migrations
+      env:
+        DB_CONNECTION: ${{ matrix.db_connection }}
+        DB_HOST: ${{ matrix.db_host }}
+        DB_PORT: ${{ matrix.db_port }}
+        DB_DATABASE: ${{ matrix.db_database }}
+        DB_USERNAME: ${{ matrix.db_username }}
+        DB_PASSWORD: ${{ matrix.db_password }}
+      run: php artisan migrate --force
+
+    - name: Seed Database
+      env:
+        DB_CONNECTION: ${{ matrix.db_connection }}
+        DB_HOST: ${{ matrix.db_host }}
+        DB_PORT: ${{ matrix.db_port }}
+        DB_DATABASE: ${{ matrix.db_database }}
+        DB_USERNAME: ${{ matrix.db_username }}
+        DB_PASSWORD: ${{ matrix.db_password }}
+      run: php artisan db:seed --force
+
+    - name: Run Database Tests
+      env:
+        DB_CONNECTION: ${{ matrix.db_connection }}
+        DB_HOST: ${{ matrix.db_host }}
+        DB_PORT: ${{ matrix.db_port }}
+        DB_DATABASE: ${{ matrix.db_database }}
+        DB_USERNAME: ${{ matrix.db_username }}
+        DB_PASSWORD: ${{ matrix.db_password }}
+      run: php artisan test --filter Database
