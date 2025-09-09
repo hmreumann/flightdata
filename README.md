@@ -18,16 +18,16 @@ Application to manage fligths, aircraft, crew, and related topics.
 # Pages
 
 ## Base application
-- [] Landing page
-- [] Login
-- [] My Account
+- [ ] Landing page
+- [ ] Login
+- [ ] My Account
 ### Admin
-- [] Clients
+- [ ] Clients
 
 ## Tenants Application
-- [] Users
-- [] Roles
-- [] Aircraft
-- [] Flights
-- [] Crew
-- [] Passangers
+- [ ] Users
+- [ ] Roles
+- [ ] Aircraft
+- [ ] Flights
+- [ ] Crew
+- [ ] Passangers
