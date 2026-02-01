@@ -1,5 +1,10 @@
 # Flight Data
-Application to manage fligths, aircraft, crew, and related topics.
+
+[![CI](https://github.com/hmreumann/flight-data/actions/workflows/ci.yml/badge.svg)](https://github.com/hmreumann/flight-data/actions/workflows/ci.yml)
+[![Security](https://github.com/hmreumann/flight-data/actions/workflows/security.yml/badge.svg)](https://github.com/hmreumann/flight-data/actions/workflows/security.yml)
+[![Code Quality](https://github.com/hmreumann/flight-data/actions/workflows/code-quality.yml/badge.svg)](https://github.com/hmreumann/flight-data/actions/workflows/code-quality.yml)
+
+Application to manage flights, aircraft, crew, and related topics.
 
 # Other examples
 - [Bytron Aviation Systems](https://www.bytron.aero)

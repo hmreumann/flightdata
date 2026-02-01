@@ -1,0 +1,39 @@
+name: Security
+
+on:
+  schedule:
+    - cron: '0 0 * * 0' # Weekly on Sunday
+  workflow_dispatch: # Allow manual triggers
+
+jobs:
+  security-audit:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: 8.2
+        extensions: dom, curl, libxml, mbstring, zip, pcntl, pdo, sqlite, pdo_sqlite, bcmath, soap, intl, gd, exif, iconv, imagick
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    - name: Run security audit
+      run: composer audit
+
+    - name: Check for known security vulnerabilities
+      run: |
+        if [ -f "composer.lock" ]; then
+          curl -H "Accept: text/plain" https://security.symfony.com/check_lock -F lock=@composer.lock
+        fi
+
+  dependency-review:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: Dependency Review
+      uses: actions/dependency-review-action@v3
