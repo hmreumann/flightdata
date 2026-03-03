@@ -1,153 +1,293 @@
 # ADR 001: Multi-Tenancy Approach
 
 ## Status
-**Decided** — Single Database with `tenant_id`
+**Decided** — Multi-Database with stancl/tenancy
 
 ## Context
 FlightData will serve multiple aviation companies (tenants). We need to decide between:
 
 1. **Single Database with `tenant_id`** — All tenants share tables, filtered by tenant identifier
-2. **Multi-Database** — Each tenant gets their own database
+2. **Multi-Database** — Each tenant gets their own database ✓
 
 **Target scale:** ~10 tenants initially, potentially 50+ with growth.
 
 ## Decision
-Use **single database with `tenant_id` column** on all tenant-scoped tables.
+Use **stancl/tenancy** package with **separate database per tenant**.
+
+### Database Structure
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    CENTRAL DATABASE                         │
+│                   (flightdata_central)                      │
+├─────────────────────────────────────────────────────────────┤
+│  • tenants          - Tenant records                        │
+│  • domains          - Subdomain mappings                    │
+│  • plans            - Subscription plans                    │
+│  • users (admins)   - Platform super admins only            │
+│  • platform stats   - Analytics, billing, etc.              │
+└─────────────────────────────────────────────────────────────┘
+          │
+          │ Creates on tenant registration
+          ▼
+┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
+│  flightdata_    │  │  flightdata_    │  │  flightdata_    │
+│  acme_aviation  │  │  skyways        │  │  demo           │
+├─────────────────┤  ├─────────────────┤  ├─────────────────┤
+│  • users        │  │  • users        │  │  • users        │
+│  • aircraft     │  │  • aircraft     │  │  • aircraft     │
+│  • flights      │  │  • flights      │  │  • flights      │
+│  • clients      │  │  • clients      │  │  • clients      │
+│  • ...          │  │  • ...          │  │  • (sample data)│
+└─────────────────┘  └─────────────────┘  └─────────────────┘
+```
 
 ## Rationale
 
-### Comparison
+### Why Multi-Database
 
-| Aspect | Single DB (tenant_id) | Multi-Database |
-|--------|----------------------|----------------|
-| **Setup Complexity** | Simple | Complex |
-| **New Tenant Onboarding** | Instant (create record) | Requires DB provisioning |
-| **Maintenance** | Single migration set | Run migrations per DB |
-| **Cross-tenant Reporting** | Easy (if needed) | Complex |
-| **Cost** | Lower (one DB instance) | Higher (multiple DBs) |
-| **Data Isolation** | Application-level | Database-level |
-| **Scaling** | Good for 10-100 tenants | Better for 100+ |
+1. **True data isolation** — Each tenant's data is completely separate
+2. **Simpler queries** — No `tenant_id` filtering needed
+3. **Per-tenant backups** — Can backup/restore individual tenants
+4. **Performance** — No risk of one tenant's queries affecting others
+5. **Easier data export** — Can dump entire tenant DB for them
+6. **Partner preference** — Team agreed on this approach
 
-### Why Single DB for FlightData
+### Package Choice: stancl/tenancy
 
-1. **Target scale** — 10-50 tenants doesn't justify multi-DB complexity
-2. **Faster MVP** — Ship sooner without DB provisioning infrastructure
-3. **Simpler operations** — One backup, one migration, one connection
-4. **Compliance acceptable** — Aviation regulations don't require DB-level isolation (see ADR 007)
+```bash
+composer require stancl/tenancy
+```
 
-### Security Measures
-
-Data isolation is enforced at application level:
-
-1. **Global Scope** — All queries automatically filtered by `tenant_id`
-2. **Middleware** — Set tenant context on every request
-3. **Model Boot** — Auto-assign `tenant_id` on creation
-4. **Query Logging** — Monitor for cross-tenant access attempts
+| Feature | stancl/tenancy |
+|---------|----------------|
+| **Subdomain routing** | ✅ Built-in |
+| **Database per tenant** | ✅ Automatic |
+| **Queue tenant context** | ✅ Supported |
+| **Cache separation** | ✅ Automatic |
+| **Central vs tenant tables** | ✅ Configurable |
+| **Migrations** | ✅ Separate per tenant |
+| **Documentation** | ✅ Excellent |
 
 ## Implementation
 
-### BelongsToTenant Trait
+### Installation
+
+```bash
+composer require stancl/tenancy
+php artisan tenancy:install
+php artisan migrate
+```
+
+### Configuration
 
 ```php
-// app/Traits/BelongsToTenant.php
-namespace App\Traits;
-
-use App\Models\Tenant;
-use App\Scopes\TenantScope;
-
-trait BelongsToTenant
-{
-    protected static function bootBelongsToTenant(): void
-    {
-        // Auto-filter all queries by tenant
-        static::addGlobalScope(new TenantScope);
-        
-        // Auto-assign tenant_id on creation
-        static::creating(function ($model) {
-            if (auth()->check() && !$model->tenant_id) {
-                $model->tenant_id = auth()->user()->tenant_id;
-            }
-        });
-    }
+// config/tenancy.php
+return [
+    'tenant_model' => \App\Models\Tenant::class,
     
-    public function tenant()
+    'central_domains' => [
+        '127.0.0.1',
+        'localhost',
+        'flightdata.com',
+        'www.flightdata.com',
+        'admin.flightdata.com',  // Super admin panel
+    ],
+    
+    'database' => [
+        'prefix' => 'flightdata_',
+        'suffix' => '',
+    ],
+];
+```
+
+### Tenant Model
+
+```php
+// app/Models/Tenant.php
+namespace App\Models;
+
+use Stancl\Tenancy\Database\Models\Tenant as BaseTenant;
+use Stancl\Tenancy\Contracts\TenantWithDatabase;
+use Stancl\Tenancy\Database\Concerns\HasDatabase;
+use Stancl\Tenancy\Database\Concerns\HasDomains;
+
+class Tenant extends BaseTenant implements TenantWithDatabase
+{
+    use HasDatabase, HasDomains;
+    
+    public static function getCustomColumns(): array
     {
-        return $this->belongsTo(Tenant::class);
+        return [
+            'id',
+            'name',
+            'plan_id',
+            'trial_ends_at',
+            'data',  // JSON column for settings
+        ];
     }
 }
 ```
 
-### TenantScope
+### Route Configuration
 
 ```php
-// app/Scopes/TenantScope.php
-namespace App\Scopes;
+// routes/tenant.php (auto-loaded for tenant context)
+Route::middleware(['web'])->group(function () {
+    Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
+    Route::resource('flights', FlightController::class);
+    Route::resource('aircraft', AircraftController::class);
+    // ... tenant routes
+});
 
-use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Scope;
+// routes/web.php (central/marketing routes)
+Route::get('/', [MarketingController::class, 'home']);
+Route::get('/pricing', [MarketingController::class, 'pricing']);
+```
 
-class TenantScope implements Scope
+### Creating a Tenant
+
+```php
+// Creating a new tenant automatically creates their database
+$tenant = Tenant::create([
+    'id' => 'acme-aviation',  // Used as subdomain
+    'name' => 'Acme Aviation',
+    'plan_id' => $plan->id,
+]);
+
+$tenant->domains()->create(['domain' => 'acme-aviation.flightdata.com']);
+
+// Run tenant migrations
+Artisan::call('tenants:migrate', ['--tenants' => [$tenant->id]]);
+
+// Optionally seed
+Artisan::call('tenants:seed', ['--tenants' => [$tenant->id]]);
+```
+
+### Migrations
+
+```bash
+# Central database migrations (tenants, plans, domains, etc.)
+database/migrations/
+
+# Tenant database migrations (users, flights, aircraft, etc.)
+database/migrations/tenant/
+```
+
+## Demo Tenant
+
+The demo tenant (`demo.flightdata.com`) is a special tenant that resets periodically.
+
+### Demo Setup
+
+```php
+// Create demo tenant (one-time)
+$demo = Tenant::create([
+    'id' => 'demo',
+    'name' => 'Demo Company',
+]);
+$demo->domains()->create(['domain' => 'demo.flightdata.com']);
+```
+
+### Demo Reset (Scheduled)
+
+```php
+// app/Console/Kernel.php
+$schedule->command('demo:reset')->hourly();
+
+// app/Console/Commands/ResetDemoTenant.php
+class ResetDemoTenant extends Command
 {
-    public function apply(Builder $builder, Model $model): void
+    protected $signature = 'demo:reset';
+    
+    public function handle()
     {
-        if (app()->has('current_tenant')) {
-            $builder->where($model->getTable() . '.tenant_id', app('current_tenant')->id);
-        }
+        $demo = Tenant::find('demo');
+        
+        tenancy()->initialize($demo);
+        
+        // Wipe and reseed
+        Artisan::call('migrate:fresh', [
+            '--database' => 'tenant',
+            '--seed' => true,
+            '--seeder' => 'DemoSeeder',
+        ]);
+        
+        $this->info('Demo tenant reset successfully.');
     }
 }
 ```
 
-### Middleware
+### Demo Seeder
 
 ```php
-// app/Http/Middleware/ResolveTenant.php
-namespace App\Http\Middleware;
-
-use App\Models\Tenant;
-use Closure;
-use Illuminate\Http\Request;
-
-class ResolveTenant
+// database/seeders/DemoSeeder.php
+class DemoSeeder extends Seeder
 {
-    public function handle(Request $request, Closure $next)
+    public function run()
     {
-        $host = $request->getHost();
-        $subdomain = explode('.', $host)[0];
+        // Create demo admin user
+        $admin = User::create([
+            'name' => 'Demo Admin',
+            'email' => 'admin@demo.flightdata.com',
+            'password' => Hash::make('demo123'),
+        ]);
         
-        // Skip for main domain
-        if ($subdomain === 'www' || $subdomain === 'flightdata') {
-            return $next($request);
-        }
+        // Sample aircraft
+        $aircraftType = AircraftType::create([
+            'name' => 'Citation XLS+',
+            'manufacturer' => 'Cessna',
+            'max_pax' => 8,
+        ]);
         
-        $tenant = Tenant::where('slug', $subdomain)->firstOrFail();
+        $aircraft = Aircraft::create([
+            'registration' => 'N12345',
+            'aircraft_type_id' => $aircraftType->id,
+            'status' => 'active',
+        ]);
         
-        app()->instance('current_tenant', $tenant);
-        
-        return $next($request);
+        // Sample flights, clients, etc.
+        // ... realistic demo data
     }
 }
+```
+
+### Demo Login Page
+
+```blade
+{{-- Show demo credentials on login page --}}
+@if(tenant()->id === 'demo')
+<div class="demo-notice">
+    <strong>Demo Mode</strong> — Resets every hour
+    <p>Email: admin@demo.flightdata.com</p>
+    <p>Password: demo123</p>
+</div>
+@endif
 ```
 
 ## Consequences
 
 ### Positive
-- ✅ Faster time to market
-- ✅ Simpler deployment and maintenance
-- ✅ Lower infrastructure costs
-- ✅ Instant tenant onboarding
-- ✅ Easy cross-tenant analytics (internal use)
+- ✅ Complete data isolation between tenants
+- ✅ Simplified queries (no tenant_id everywhere)
+- ✅ Per-tenant backup/restore capability
+- ✅ Easy data export for tenant offboarding
+- ✅ Package handles complexity (routing, migrations, etc.)
 
 ### Negative
-- ⚠️ Must be vigilant about tenant data isolation
-- ⚠️ Large tenants might need migration later
-- ⚠️ Shared database limits affect all tenants
+- ⚠️ More databases to manage
+- ⚠️ Migrations must run per-tenant
+- ⚠️ Cross-tenant queries require extra work
+- ⚠️ Slightly more complex local development
 
-### Migration Path
-If a tenant requires complete isolation (contractual/regulatory), we can:
-1. Extract their data to a dedicated database
-2. Configure their subdomain to use different connection
-3. Keep architecture flexible for hybrid approach
+### Mitigations
+- Use `tenants:migrate` command to batch migrations
+- Central database for any cross-tenant analytics
+- Forge handles database creation automatically
+
+---
+
+*Last updated: February 2026*
 
 ## Review Triggers
 Revisit this decision when:

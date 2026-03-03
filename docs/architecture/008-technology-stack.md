@@ -8,10 +8,11 @@
 | Layer | Technology | Notes |
 |-------|------------|-------|
 | **Backend** | Laravel 11 | PHP 8.3+ |
-| **Frontend** | Livewire 3 + Alpine.js | SPA-like with wire:navigate |
-| **CSS** | Tailwind CSS | Via Vite |
-| **Auth** | Jetstream + Fortify | With Spatie Permission |
-| **Database** | PostgreSQL | Better for multi-tenant |
+| **Auth** | Laravel Breeze | Login, register, password reset |
+| **UI Framework** | Filament 3 | All authenticated user views |
+| **CSS** | Tailwind CSS | Bundled with Filament |
+| **Multi-tenancy** | stancl/tenancy | Separate DB per tenant |
+| **Database** | PostgreSQL | One per tenant |
 | **Cache/Queue** | Redis | Single instance |
 | **Mobile** | Swift/SwiftUI | Phase 2, iOS native |
 | **Hosting** | DigitalOcean + Forge | See ADR 009 |
@@ -33,9 +34,10 @@
     "require": {
         "php": "^8.3",
         "laravel/framework": "^11.0",
-        "laravel/jetstream": "^5.0",
+        "laravel/breeze": "^2.0",
+        "filament/filament": "^3.0",
+        "stancl/tenancy": "^3.0",
         "laravel/sanctum": "^4.0",
-        "livewire/livewire": "^3.0",
         "spatie/laravel-permission": "^6.0",
         "barryvdh/laravel-dompdf": "^2.0",
         "maatwebsite/excel": "^3.1"
@@ -56,120 +58,218 @@ app/
 │   ├── UserType.php
 │   ├── FlightStatus.php
 │   └── AircraftStatus.php
+├── Filament/              # Filament panels & resources
+│   ├── Admin/             # Super admin panel
+│   │   ├── Resources/
+│   │   └── Pages/
+│   ├── App/               # Tenant panel
+│   │   ├── Resources/
+│   │   │   ├── FlightResource.php
+│   │   │   ├── AircraftResource.php
+│   │   │   └── UserResource.php
+│   │   ├── Pages/
+│   │   │   └── Dashboard.php
+│   │   └── Widgets/
+│   └── Client/            # External client portal (optional)
 ├── Http/
 │   ├── Controllers/
-│   │   ├── Api/          # API controllers
-│   │   └── Web/          # Web controllers (minimal with Livewire)
-│   ├── Livewire/         # Livewire components
-│   │   ├── Flights/
-│   │   ├── Aircraft/
-│   │   └── Dashboard.php
+│   │   └── Api/           # API controllers
 │   └── Middleware/
-│       ├── ResolveTenant.php
-│       └── EnsureUserIsInternal.php
 ├── Models/
 │   ├── Tenant.php
 │   ├── User.php
 │   ├── Flight.php
 │   └── ...
-├── Policies/             # Authorization policies
-├── Scopes/               # Query scopes (TenantScope)
-├── Services/             # Business logic services
+├── Policies/              # Authorization policies
+├── Services/              # Business logic services
 │   ├── WeightBalanceService.php
 │   └── SyncService.php
 └── Traits/
-    ├── BelongsToTenant.php
     └── Auditable.php
 ```
 
-## Frontend: Livewire 3 + Alpine.js
+## Frontend: Filament 3
 
-### Why Livewire?
+### Why Filament?
 
-- No separate JavaScript framework to maintain
-- Full Laravel integration
-- Real-time updates without complex setup
-- `wire:navigate` provides SPA-like experience
+- Complete UI framework (tables, forms, actions, widgets, dashboards)
+- Built on Livewire 3 (reactive without separate JS framework)
+- Beautiful, consistent UI out of the box
+- Excellent multi-tenancy support
+- Rapid development — resources generated from models
+- Built-in role/permission integration
+- Works for **all users**, not just admins (despite the "admin panel" marketing)
+
+### When to Use Filament vs Custom Views
+
+| View Type | Technology | Reason |
+|-----------|------------|--------|
+| Super admin panel | Filament | CRUD for tenants, billing |
+| Tenant admin views | Filament | User management, settings |
+| Pilot/dispatcher views | Filament | Flights, aircraft, scheduling |
+| Client portal | Filament | Bookings, flight history |
+| **Marketing site** | Custom Blade | Unique branding, SEO |
+| **Landing pages** | Custom Blade | Public, no auth |
+| **Specialized UX** | Custom Livewire | Drag-drop scheduler, maps (if needed) |
 
 ### Architecture Pattern
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Blade Layout                              │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  <nav> with wire:navigate links                      │    │
-│  └─────────────────────────────────────────────────────┘    │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │                 Livewire Component                   │    │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  │    │
-│  │  │ PHP Class   │  │ Blade View  │  │ Alpine.js   │  │    │
-│  │  │ (Backend)   │──│ (Template)  │──│ (UI State)  │  │    │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘  │    │
-│  └─────────────────────────────────────────────────────┘    │
+│                    Filament Panels                          │
+│                                                             │
+│  ┌─────────────────┐  ┌─────────────────┐                  │
+│  │   Admin Panel   │  │   Tenant Panel  │                  │
+│  │ (Super Admins)  │  │ (All Tenant     │                  │
+│  │                 │  │  Users: admin,  │                  │
+│  │ admin.domain.com│  │  pilots, crew)  │                  │
+│  └─────────────────┘  │                 │                  │
+│                       │ {tenant}.domain │                  │
+│  ┌─────────────────┐  └─────────────────┘                  │
+│  │  Client Portal  │                                       │
+│  │ (External users │  (Optional separate panel or          │
+│  │  - passengers)  │   same panel with role-based nav)     │
+│  └─────────────────┘                                       │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │                    Resources                         │   │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐            │   │
+│  │  │ Flights  │ │ Aircraft │ │  Users   │  ...       │   │
+│  │  │ Resource │ │ Resource │ │ Resource │            │   │
+│  │  └──────────┘ └──────────┘ └──────────┘            │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│                  Custom Blade Views                         │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  Marketing Site (flightdata.com)                     │   │
+│  │  - Home, Pricing, Features, Contact, Demo signup     │   │
+│  └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Component Structure
+### Multi-Panel Setup
 
 ```php
-// app/Http/Livewire/Flights/FlightList.php
-namespace App\Http\Livewire\Flights;
-
-use App\Models\Flight;
-use Livewire\Component;
-use Livewire\WithPagination;
-
-class FlightList extends Component
+// app/Providers/Filament/AdminPanelProvider.php
+class AdminPanelProvider extends PanelProvider
 {
-    use WithPagination;
-    
-    public string $search = '';
-    public string $status = '';
-    public string $sortField = 'scheduled_departure';
-    public string $sortDirection = 'desc';
-    
-    protected $queryString = ['search', 'status'];
-    
-    public function render()
+    public function panel(Panel $panel): Panel
     {
-        $flights = Flight::query()
-            ->when($this->search, fn($q) => $q->search($this->search))
-            ->when($this->status, fn($q) => $q->where('status', $this->status))
-            ->orderBy($this->sortField, $this->sortDirection)
-            ->paginate(20);
-            
-        return view('livewire.flights.flight-list', [
-            'flights' => $flights,
-        ]);
+        return $panel
+            ->id('admin')
+            ->domain('admin.' . config('app.domain'))
+            ->path('')
+            ->login()
+            ->colors(['primary' => Color::Indigo])
+            ->discoverResources(in: app_path('Filament/Admin/Resources'))
+            ->discoverPages(in: app_path('Filament/Admin/Pages'));
+    }
+}
+
+// app/Providers/Filament/AppPanelProvider.php
+class AppPanelProvider extends PanelProvider
+{
+    public function panel(Panel $panel): Panel
+    {
+        return $panel
+            ->id('app')
+            ->path('')
+            ->login()
+            ->tenant(Tenant::class)  // Multi-tenancy support
+            ->colors(['primary' => Color::Blue])
+            ->discoverResources(in: app_path('Filament/App/Resources'))
+            ->discoverPages(in: app_path('Filament/App/Pages'));
     }
 }
 ```
 
-### SPA-like Navigation
+### Resource Example
 
-```blade
-{{-- layouts/app.blade.php --}}
-<!DOCTYPE html>
-<html>
-<head>
-    @livewireStyles
-    @vite(['resources/css/app.css', 'resources/js/app.js'])
-</head>
-<body>
-    <nav>
-        {{-- wire:navigate for instant navigation --}}
-        <a href="{{ route('dashboard') }}" wire:navigate>Dashboard</a>
-        <a href="{{ route('flights.index') }}" wire:navigate>Flights</a>
-        <a href="{{ route('aircraft.index') }}" wire:navigate>Aircraft</a>
-    </nav>
-    
-    <main>
-        {{ $slot }}
-    </main>
-    
-    @livewireScripts
-</body>
-</html>
+```php
+// app/Filament/App/Resources/FlightResource.php
+namespace App\Filament\App\Resources;
+
+use App\Models\Flight;
+use Filament\Forms;
+use Filament\Tables;
+use Filament\Resources\Resource;
+
+class FlightResource extends Resource
+{
+    protected static ?string $model = Flight::class;
+    protected static ?string $navigationIcon = 'heroicon-o-paper-airplane';
+    protected static ?string $navigationGroup = 'Operations';
+
+    public static function form(Forms\Form $form): Forms\Form
+    {
+        return $form->schema([
+            Forms\Components\Select::make('aircraft_id')
+                ->relationship('aircraft', 'registration')
+                ->required(),
+            Forms\Components\Select::make('client_id')
+                ->relationship('client', 'name'),
+            Forms\Components\DateTimePicker::make('scheduled_departure')
+                ->required(),
+            Forms\Components\DateTimePicker::make('scheduled_arrival')
+                ->required(),
+            Forms\Components\Select::make('status')
+                ->options(FlightStatus::class)
+                ->default('draft'),
+        ]);
+    }
+
+    public static function table(Tables\Table $table): Tables\Table
+    {
+        return $table
+            ->columns([
+                Tables\Columns\TextColumn::make('number')
+                    ->formatStateUsing(fn ($state) => 'FLT-' . str_pad($state, 3, '0', STR_PAD_LEFT))
+                    ->sortable(),
+                Tables\Columns\TextColumn::make('aircraft.registration')
+                    ->searchable(),
+                Tables\Columns\TextColumn::make('scheduled_departure')
+                    ->dateTime()
+                    ->sortable(),
+                Tables\Columns\BadgeColumn::make('status')
+                    ->colors([
+                        'gray' => 'draft',
+                        'info' => 'scheduled',
+                        'warning' => 'active',
+                        'success' => 'completed',
+                        'danger' => 'cancelled',
+                    ]),
+            ])
+            ->filters([
+                Tables\Filters\SelectFilter::make('status')
+                    ->options(FlightStatus::class),
+                Tables\Filters\Filter::make('scheduled_departure')
+                    ->form([
+                        Forms\Components\DatePicker::make('from'),
+                        Forms\Components\DatePicker::make('until'),
+                    ]),
+            ])
+            ->actions([
+                Tables\Actions\EditAction::make(),
+                Tables\Actions\ViewAction::make(),
+            ]);
+    }
+}
+```
+
+### Filament + stancl/tenancy
+
+Filament has built-in tenant support, but we use stancl/tenancy for database switching:
+
+```php
+// In TenancyServiceProvider
+// stancl/tenancy handles DB switching
+// Filament's tenant() just controls panel access
+
+Tenancy::$shouldInitializeTenancy = function () {
+    return request()->is('*') && ! request()->is('admin*');
+};
 ```
 
 ## Database: PostgreSQL

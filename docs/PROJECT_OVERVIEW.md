@@ -31,10 +31,12 @@ A flight operations support application (Electronic Flight Bag) designed to be s
 ## Platform Requirements
 
 ### Web Application (Phase 1)
-- **Framework:** Laravel 11 with Jetstream/Fortify
-- **Frontend:** Livewire 3 + Alpine.js + Tailwind CSS
-- **Architecture:** SPA-like experience using `wire:navigate`
-- **Database:** PostgreSQL with multi-tenant architecture
+- **Framework:** Laravel 11 with Breeze
+- **Auth:** Laravel Breeze (login, register, password reset)
+- **UI:** Filament 3 for all authenticated views (super admin, tenant users, clients)
+- **Custom Views:** Marketing site, landing pages only
+- **Multi-tenancy:** stancl/tenancy with separate databases
+- **Database:** PostgreSQL
 - **API:** REST API ready for mobile (Sanctum)
 
 ### Mobile Application (Phase 2)

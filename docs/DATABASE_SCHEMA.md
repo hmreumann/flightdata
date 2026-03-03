@@ -2,75 +2,144 @@
 
 ## Overview
 
-Single PostgreSQL database with `tenant_id` on all tenant-scoped tables. Uses Laravel conventions (timestamps, soft deletes where appropriate).
+**Multi-database architecture** using stancl/tenancy:
+- **Central database** (`flightdata_central`) — tenants, domains, plans, super admins
+- **Tenant databases** (`flightdata_{tenant}`) — each tenant's operational data
 
-## Entity Relationship Diagram (Simplified)
+No `tenant_id` needed in tenant tables — each tenant has their own database.
 
-```
-┌─────────────┐
-│   tenants   │
-└──────┬──────┘
-       │
-       │ tenant_id (on all tables below)
-       ▼
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│    users    │────▶│crew_profiles│     │   clients   │
-└──────┬──────┘     └─────────────┘     └──────┬──────┘
-       │                                        │
-       │ (roles via Spatie)                     │
-       ▼                                        ▼
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│    bases    │◀────│  aircraft   │     │   flights   │
-└─────────────┘     └──────┬──────┘     └──────┬──────┘
-                           │                   │
-                           ▼                   ▼
-                    ┌─────────────┐     ┌─────────────┐
-                    │aircraft_type│     │ flight_legs │
-                    └─────────────┘     └──────┬──────┘
-                                               │
-                           ┌───────────────────┼───────────────────┐
-                           ▼                   ▼                   ▼
-                    ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-                    │ flight_crew │     │flight_pax   │     │ flight_logs │
-                    └─────────────┘     └─────────────┘     └─────────────┘
-```
+## Per-Tenant Sequential Numbering
 
-## Core Tables
+For better UX, user-facing entities have a `number` column that's sequential **per tenant**. Since each tenant has their own database, this is automatic — just use auto-increment or manual sequencing.
+
+| Table | Column | Display Format | Example |
+|-------|--------|----------------|----------|
+| `flights` | `number` | FLT-{number} | FLT-001 |
+| `clients` | `number` | CLT-{number} | CLT-042 |
+| `invoices` | `number` | INV-{year}-{number} | INV-2026-001 |
+
+**Note:** Aircraft use registration (N12345) as their identifier — no sequential number needed.
+
+---
+
+## Central Database Tables
+
+These tables exist only in `flightdata_central`:
 
 ### tenants
-Our customers (aviation companies).
+Our customers (aviation companies). Managed by stancl/tenancy.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | bigint PK | |
-| `name` | string | Company name |
-| `slug` | string unique | Subdomain identifier |
-| `domain` | string nullable | Custom domain (future) |
-| `settings` | jsonb | Tenant configuration |
-| `data_mode` | enum | 'full' or 'external' (personal data storage mode) |
-| `region` | string | 'us', 'eu' (for future multi-region) |
+| `id` | string PK | Tenant identifier (slug) — e.g., "acme-aviation" |
+| `name` | string | Company display name |
+| `data` | jsonb | Settings, config, metadata |
 | `created_at` | timestamp | |
 | `updated_at` | timestamp | |
 
-**Settings JSON structure:**
+**Data JSON structure:**
 ```json
 {
   "timezone": "America/New_York",
   "weight_unit": "kg",
   "fuel_unit": "liters",
-  "logo_path": "tenants/1/logo.png"
+  "logo_path": "tenants/acme/logo.png",
+  "trial_ends_at": "2026-02-15",
+  "plan_id": 1
 }
 ```
 
 ---
 
-### users
-All system users (internal and external).
+### domains
+Subdomain-to-tenant mapping. Managed by stancl/tenancy.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | bigint PK | |
-| `tenant_id` | bigint FK | |
+| `domain` | string unique | e.g., "acme-aviation.flightdata.com" |
+| `tenant_id` | string FK | References tenants.id |
+| `created_at` | timestamp | |
+| `updated_at` | timestamp | |
+
+---
+
+### plans
+Subscription plans (central — shared across tenants).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | bigint PK | |
+| `name` | string | "Standard", "Enterprise" |
+| `slug` | string unique | |
+| `price_per_aircraft` | decimal | 49.00 |
+| `features` | jsonb nullable | Feature flags |
+| `is_active` | boolean | |
+| `created_at` | timestamp | |
+| `updated_at` | timestamp | |
+
+---
+
+### super_admins
+Platform administrators (us). Separate from tenant users.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | bigint PK | |
+| `name` | string | |
+| `email` | string unique | |
+| `password` | string | |
+| `created_at` | timestamp | |
+| `updated_at` | timestamp | |
+
+---
+
+## Tenant Database Tables
+
+These tables exist in each tenant database (`flightdata_{tenant}`):
+
+## Entity Relationship Diagram (Simplified)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         CENTRAL DATABASE                                    │
+│  ┌─────────────┐     ┌─────────────┐     ┌─────────────┐                    │
+│  │   tenants   │────▶│   domains   │     │    plans    │                    │
+│  └─────────────┘     └─────────────┘     └─────────────┘                    │
+│                                                                              │
+│  ┌─────────────┐                                                            │
+│  │super_admins │                                                            │
+│  └─────────────┘                                                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    TENANT DATABASE (one per tenant)                         │
+│                                                                              │
+│  ┌─────────────┐     ┌─────────────┐     ┌─────────────┐                    │
+│  │    users    │────▶│crew_profiles│     │   clients   │                    │
+│  └──────┬──────┘     └─────────────┘     └──────┬──────┘                    │
+│         │                                        │                          │
+│         │ (roles via Spatie)                     │                          │
+│         ▼                                        ▼                          │
+│  ┌─────────────┐     ┌─────────────┐     ┌─────────────┐                    │
+│  │    bases    │◀────│  aircraft   │     │   flights   │                    │
+│  └─────────────┘     └──────┬──────┘     └──────┬──────┘                    │
+│                             │                   │                           │
+│                             ▼                   ▼                           │
+│                      ┌─────────────┐     ┌─────────────┐                    │
+│                      │aircraft_type│     │ flight_legs │                    │
+│                      └─────────────┘     └─────────────┘                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Core Tenant Tables
+
+### users
+All tenant users (internal and external).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | bigint PK | |
 | `type` | enum | 'internal', 'external' |
 | `name` | string | |
 | `email` | string unique | |
@@ -83,12 +152,12 @@ All system users (internal and external).
 | `created_at` | timestamp | |
 | `updated_at` | timestamp | |
 
-**Indexes:** `tenant_id`, `email`, `type`
+**Indexes:** `email`, `type`
 
 ---
 
 ### roles / permissions / model_has_roles / etc.
-Spatie Laravel-Permission tables. Standard structure with added `tenant_id` for tenant-specific roles.
+Spatie Laravel-Permission tables. Standard structure — no `tenant_id` needed since each tenant has own database.
 
 ---
 
@@ -98,7 +167,6 @@ Airports/locations where tenant operates.
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | bigint PK | |
-| `tenant_id` | bigint FK | |
 | `name` | string | "New York JFK" |
 | `icao_code` | string | "KJFK" |
 | `iata_code` | string nullable | "JFK" |
@@ -117,7 +185,6 @@ Aircraft models with performance data.
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | bigint PK | |
-| `tenant_id` | bigint FK | |
 | `name` | string | "Citation XLS+" |
 | `manufacturer` | string | "Cessna" |
 | `model` | string | "560XL" |
@@ -138,7 +205,6 @@ Individual airframes in the fleet.
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | bigint PK | |
-| `tenant_id` | bigint FK | |
 | `aircraft_type_id` | bigint FK | |
 | `base_id` | bigint FK | Home base |
 | `registration` | string | "N12345" |
@@ -157,8 +223,8 @@ Tenant's customers (who book flights).
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | bigint PK | |
-| `tenant_id` | bigint FK | |
+| `id` | bigint PK | Internal ID (for DB relations) |
+| `number` | unsigned int | Sequential (CLT-001, CLT-002...) |
 | `type` | enum | 'individual', 'corporate' |
 | `name` | string | Person name or company name |
 | `company_name` | string nullable | If individual works for company |
@@ -196,11 +262,10 @@ Flight bookings/operations.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | bigint PK | |
-| `tenant_id` | bigint FK | |
+| `id` | bigint PK | Internal ID (for DB relations) |
+| `number` | unsigned int | Sequential (what users see: 1, 2, 3...) |
 | `client_id` | bigint FK nullable | Who booked |
 | `aircraft_id` | bigint FK nullable | Assigned aircraft |
-| `flight_number` | string nullable | |
 | `status` | enum | 'draft', 'scheduled', 'active', 'completed', 'cancelled' |
 | `departure_base_id` | bigint FK | First leg origin |
 | `arrival_base_id` | bigint FK | Last leg destination |
@@ -316,7 +381,6 @@ Files attached to various entities.
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | bigint PK | |
-| `tenant_id` | bigint FK | |
 | `documentable_type` | string | Polymorphic (Aircraft, Flight, etc.) |
 | `documentable_id` | bigint | |
 | `type` | string | 'checklist', 'manual', 'certificate', etc. |
@@ -336,7 +400,6 @@ Checklist templates by aircraft type.
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | bigint PK | |
-| `tenant_id` | bigint FK | |
 | `aircraft_type_id` | bigint FK nullable | Null = all types |
 | `name` | string | "Pre-flight", "Before Start" |
 | `category` | string | 'normal', 'emergency', 'abnormal' |
@@ -376,7 +439,6 @@ Immutable record of all data changes (compliance).
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | bigint PK | |
-| `tenant_id` | bigint FK | |
 | `user_id` | bigint FK nullable | |
 | `auditable_type` | string | Model changed |
 | `auditable_id` | bigint | |
@@ -397,7 +459,6 @@ Log of offline sync conflicts (for iOS app).
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | bigint PK | |
-| `tenant_id` | bigint FK | |
 | `user_id` | bigint FK | Who synced |
 | `model_type` | string | |
 | `model_id` | bigint | |
@@ -411,21 +472,17 @@ Log of offline sync conflicts (for iOS app).
 
 ## Indexes Strategy
 
-All tenant-scoped tables should have:
-```sql
-CREATE INDEX idx_{table}_tenant ON {table}(tenant_id);
-```
+With multi-database tenancy, no `tenant_id` indexes needed. Focus on query patterns:
 
-Common query patterns:
 ```sql
 -- Flights by date range
-CREATE INDEX idx_flights_scheduled ON flights(tenant_id, scheduled_departure);
+CREATE INDEX idx_flights_scheduled ON flights(scheduled_departure);
 
 -- Aircraft by status
-CREATE INDEX idx_aircraft_status ON aircraft(tenant_id, status);
+CREATE INDEX idx_aircraft_status ON aircraft(status);
 
 -- Users by type
-CREATE INDEX idx_users_type ON users(tenant_id, type);
+CREATE INDEX idx_users_type ON users(type);
 ```
 
 ---

@@ -1,7 +1,7 @@
 # ADR 004: Subdomain-Based Tenant Routing
 
 ## Status
-**Decided** — Subdomain routing (`tenant.flightdata.com`)
+**Decided** — Subdomain routing via stancl/tenancy (`tenant.flightdata.com`)
 
 ## Context
 With multiple tenant companies, how do users access their tenant?
@@ -13,6 +13,8 @@ Options:
 
 ## Decision
 Use **subdomain-based routing**: `{tenant}.flightdata.com`
+
+Handled automatically by **stancl/tenancy** package (see ADR 001).
 
 ## Rationale
 
@@ -27,7 +29,7 @@ Use **subdomain-based routing**: `{tenant}.flightdata.com`
 
 ## How It Works
 
-**All subdomains point to the same Laravel application.**
+**All subdomains point to the same Laravel application. stancl/tenancy handles tenant identification and database switching automatically.**
 
 ```
 DNS Configuration:
@@ -35,9 +37,9 @@ DNS Configuration:
 flightdata.com    →  Server IP (A record)
 
 All these hit the same Laravel app:
-- acme-aviation.flightdata.com
-- skyways.flightdata.com
-- demo.flightdata.com
+- acme-aviation.flightdata.com  → Tenant DB: flightdata_acme_aviation
+- skyways.flightdata.com        → Tenant DB: flightdata_skyways
+- demo.flightdata.com           → Tenant DB: flightdata_demo
 ```
 
 ## Implementation
@@ -45,136 +47,94 @@ All these hit the same Laravel app:
 ### Domain Structure
 
 ```
-flightdata.com              → Marketing site (public)
-app.flightdata.com          → Login portal (choose tenant)
-{tenant}.flightdata.com     → Tenant application
+flightdata.com              → Marketing site (central DB)
+admin.flightdata.com        → Super admin panel (central DB)
+demo.flightdata.com         → Demo tenant (resets hourly)
+{tenant}.flightdata.com     → Tenant application (tenant DB)
 api.flightdata.com          → API (tenant from auth token)
 ```
 
-### Route Configuration
+### Central Domains Configuration
 
 ```php
-// routes/web.php
+// config/tenancy.php
+'central_domains' => [
+    '127.0.0.1',
+    'localhost',
+    'flightdata.test',           // Local dev
+    'flightdata.com',            // Marketing
+    'www.flightdata.com',        // Marketing
+    'admin.flightdata.com',      // Super admin
+    'api.flightdata.com',        // API (tenant from token)
+],
+```
 
-// Marketing site (no tenant)
-Route::domain('flightdata.com')->group(function () {
-    Route::get('/', [MarketingController::class, 'home']);
-    Route::get('/pricing', [MarketingController::class, 'pricing']);
-    Route::get('/contact', [MarketingController::class, 'contact']);
+### Route Files
+
+```php
+// routes/web.php — Central routes (marketing, super admin)
+Route::get('/', [MarketingController::class, 'home']);
+Route::get('/pricing', [MarketingController::class, 'pricing']);
+Route::get('/contact', [MarketingController::class, 'contact']);
+
+// Admin subdomain
+Route::domain('admin.' . config('app.domain'))->group(function () {
+    Route::middleware(['auth', 'super-admin'])->group(function () {
+        Route::get('/', [SuperAdminController::class, 'dashboard']);
+        Route::resource('tenants', TenantController::class);
+    });
 });
 
-// Tenant application
-Route::domain('{tenant}.flightdata.com')
-    ->middleware(['web', 'tenant'])
-    ->group(function () {
-        
-        // Auth routes (tenant context needed for login)
-        Route::get('/login', [AuthController::class, 'showLogin'])->name('login');
-        Route::post('/login', [AuthController::class, 'login']);
-        Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
-        
-        // Protected routes
-        Route::middleware(['auth'])->group(function () {
-            Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
-            Route::resource('flights', FlightController::class);
-            Route::resource('aircraft', AircraftController::class);
-            // ... more routes
-        });
+// routes/tenant.php — Tenant routes (auto-loaded by stancl/tenancy)
+Route::middleware(['web'])->group(function () {
+    // Auth
+    Route::get('/login', [AuthController::class, 'showLogin'])->name('login');
+    Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
+    
+    // Protected
+    Route::middleware(['auth'])->group(function () {
+        Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
+        Route::resource('flights', FlightController::class);
+        Route::resource('aircraft', AircraftController::class);
     });
+});
 ```
 
-### Tenant Resolution Middleware
+### Tenant Identification (Automatic)
+
+stancl/tenancy handles this via `InitializeTenancyByDomain` middleware:
 
 ```php
-// app/Http/Middleware/ResolveTenant.php
-namespace App\Http\Middleware;
-
-use App\Models\Tenant;
-use Closure;
-use Illuminate\Http\Request;
-use Symfony\Component\HttpFoundation\Response;
-
-class ResolveTenant
+// app/Providers/TenancyServiceProvider.php (auto-generated)
+public function boot()
 {
-    public function handle(Request $request, Closure $next): Response
-    {
-        $tenant = $request->route('tenant');
-        
-        if (!$tenant) {
-            abort(404, 'Tenant not found');
-        }
-        
-        $tenantModel = Tenant::where('slug', $tenant)->first();
-        
-        if (!$tenantModel) {
-            abort(404, 'Tenant not found');
-        }
-        
-        // Store tenant in container
-        app()->instance('current_tenant', $tenantModel);
-        
-        // Share with views
-        view()->share('currentTenant', $tenantModel);
-        
-        return $next($request);
-    }
-}
-
-// Register in Kernel.php
-protected $middlewareAliases = [
-    'tenant' => \App\Http\Middleware\ResolveTenant::class,
-];
-```
-
-### Tenant Helper
-
-```php
-// app/helpers.php (autoloaded via composer.json)
-
-if (!function_exists('tenant')) {
-    function tenant(): ?\App\Models\Tenant
-    {
-        return app()->has('current_tenant') ? app('current_tenant') : null;
-    }
-}
-
-if (!function_exists('tenant_route')) {
-    function tenant_route(string $name, array $parameters = []): string
-    {
-        $tenant = tenant();
-        return route($name, array_merge(['tenant' => $tenant?->slug], $parameters));
-    }
+    $this->configureRequests();
+    $this->configureJobs();
+    // ...
 }
 ```
 
-### URL Generation
+No manual middleware needed — the package:
+1. Extracts subdomain from request
+2. Looks up tenant in `tenants` table via `domains` relationship
+3. Switches database connection to tenant's database
+4. Sets `tenant()` helper for use in code
+
+### Accessing Current Tenant
 
 ```php
-// In controllers/views, generate tenant-aware URLs
-$url = route('flights.show', [
-    'tenant' => tenant()->slug,
-    'flight' => $flight->id
-]);
-
-// Or use helper
-$url = tenant_route('flights.show', ['flight' => $flight->id]);
+// In controllers, models, anywhere
+$tenant = tenant();
+$tenantName = tenant('name');
 
 // In Blade
-<a href="{{ tenant_route('flights.index') }}">Flights</a>
+{{ tenant()->name }}
 ```
 
 ## Local Development
 
-### Option 1: Edit /etc/hosts
-
-```
-# /etc/hosts
-127.0.0.1  flightdata.test
-127.0.0.1  acme.flightdata.test
-127.0.0.1  demo.flightdata.test
-```
-
-### Option 2: Laravel Valet (Recommended)
+### Option 1: Laravel Valet (Recommended)
 
 ```bash
 cd flightdata
@@ -184,17 +144,24 @@ valet link
 # Visit: http://acme.flightdata.test
 ```
 
-### Option 3: Laravel Herd
+### Option 2: Edit /etc/hosts
 
-Similar to Valet, Herd handles wildcard subdomains automatically.
+```
+# /etc/hosts
+127.0.0.1  flightdata.test
+127.0.0.1  acme.flightdata.test
+127.0.0.1  demo.flightdata.test
+127.0.0.1  admin.flightdata.test
+```
 
 ### Environment Config
 
 ```env
 # .env
 APP_URL=http://flightdata.test
+APP_DOMAIN=flightdata.test
 
-# For subdomain routing
+# For subdomain sessions
 SESSION_DOMAIN=.flightdata.test
 SANCTUM_STATEFUL_DOMAINS=*.flightdata.test
 ```
@@ -271,36 +238,50 @@ sudo certbot certonly \
 
 ## API Subdomain
 
+For the API, tenant is resolved from the authenticated user's token, not the subdomain:
+
 ```php
 // routes/api.php
-Route::domain('api.flightdata.com')->group(function () {
+Route::domain('api.' . config('app.domain'))->group(function () {
     Route::middleware('auth:sanctum')->group(function () {
-        // Tenant resolved from authenticated user's tenant_id
         Route::apiResource('flights', Api\FlightController::class);
+        Route::apiResource('aircraft', Api\AircraftController::class);
     });
 });
 ```
 
-For API, tenant comes from the authenticated user, not the subdomain:
+The API uses a custom middleware to initialize tenancy from the user:
 
 ```php
-// app/Http/Middleware/SetTenantFromUser.php
-public function handle(Request $request, Closure $next)
+// app/Http/Middleware/InitializeTenancyFromUser.php
+use Stancl\Tenancy\Tenancy;
+
+class InitializeTenancyFromUser
 {
-    if ($user = $request->user()) {
-        $tenant = $user->tenant;
-        app()->instance('current_tenant', $tenant);
+    public function handle(Request $request, Closure $next)
+    {
+        if ($user = $request->user()) {
+            // User's tenant_id stored when they were created
+            $tenant = Tenant::find($user->tenant_id);
+            
+            if ($tenant) {
+                tenancy()->initialize($tenant);
+            }
+        }
+        
+        return $next($request);
     }
-    
-    return $next($request);
 }
 ```
+
+**Note:** API users need their `tenant_id` stored in the central `users` table or as a claim in their token.
 
 ## Consequences
 
 ### Positive
 - ✅ Professional, branded feel for each tenant
 - ✅ Clean URL structure
+- ✅ Automatic database switching via stancl/tenancy
 - ✅ Easy white-labeling potential (custom domains later)
 - ✅ Industry standard for SaaS
 - ✅ Session isolation per subdomain
@@ -309,7 +290,7 @@ public function handle(Request $request, Closure $next)
 - ⚠️ Wildcard SSL certificate required
 - ⚠️ DNS configuration needed
 - ⚠️ Local dev requires hosts file or Valet
-- ⚠️ Slightly more complex routing setup
+- ⚠️ Package dependency (stancl/tenancy)
 
 ## Future: Custom Domains
 
@@ -319,11 +300,17 @@ Enterprise tenants may want their own domain:
 flights.acme-aviation.com → acme-aviation.flightdata.com
 ```
 
-Implementation:
-1. Add `custom_domain` column to tenants table
-2. Tenant adds CNAME pointing to our server
-3. Generate SSL certificate for their domain
-4. Middleware checks both subdomain and custom domain
+stancl/tenancy supports this via the `domains` table:
+
+```php
+// Add custom domain for tenant
+$tenant->domains()->create(['domain' => 'flights.acme-aviation.com']);
+
+// Tenant adds CNAME record:
+// flights.acme-aviation.com → CNAME → flightdata.com
+```
+
+SSL handled via Forge or Certbot for each custom domain.
 
 ---
 
