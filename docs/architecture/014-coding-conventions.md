@@ -79,7 +79,7 @@ Documentation files (like these ADRs) can use the current name for clarity, but 
 | Models | Singular PascalCase | `Flight`, `Aircraft` |
 | Tables | Plural snake_case | `flights`, `aircraft` |
 | Controllers | PascalCase + Controller | `FlightController` |
-| Livewire | PascalCase | `FlightList`, `CreateFlight` |
+| Filament Resources | PascalCase + Resource | `FlightResource`, `AircraftResource` |
 | Routes | kebab-case | `flight-logs`, `weight-balance` |
 | Config keys | snake_case | `price_per_aircraft` |
 
@@ -87,15 +87,22 @@ Documentation files (like these ADRs) can use the current name for clarity, but 
 
 ```
 app/
-├── Actions/          # Single-purpose classes
-├── Enums/            # PHP enums
+├── Actions/           # Single-purpose classes
+├── Enums/             # PHP enums
+├── Filament/
+│   ├── Admin/         # Super admin panel
+│   │   ├── Resources/
+│   │   └── Pages/
+│   └── App/           # Tenant panel
+│       ├── Resources/
+│       ├── Pages/
+│       └── Widgets/
 ├── Http/
-│   ├── Controllers/  # Minimal with Livewire
-│   ├── Livewire/     # Livewire components
+│   ├── Controllers/   # API controllers only
 │   └── Middleware/
 ├── Models/
 ├── Policies/
-├── Services/         # Business logic
+├── Services/          # Business logic
 └── Traits/
 ```
 

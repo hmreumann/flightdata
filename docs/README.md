@@ -8,8 +8,8 @@ This folder contains all planning, architecture decisions, and specifications fo
 
 | Aspect | Decision |
 |--------|----------|
-| **Multi-tenancy** | Single database with `tenant_id` |
-| **Web Stack** | Laravel 11, Livewire 3, Alpine.js, Tailwind |
+| **Multi-tenancy** | Multi-database with stancl/tenancy |
+| **Web Stack** | Laravel 11, Filament 3, Tailwind |
 | **Mobile** | Native Swift/SwiftUI (Phase 2) |
 | **API** | Laravel Sanctum REST API |
 | **Auth/Permissions** | Spatie Laravel-Permission |
