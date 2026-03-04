@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\Tenant;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -42,7 +43,25 @@ expect()->extend('toBeOne', function () {
 |
 */
 
-function something()
+function createTenant(string $id = 'test', string $name = 'Test Aviation'): Tenant
 {
-    // ..
+    $tenant = Tenant::create([
+        'id' => $id,
+        'name' => $name,
+    ]);
+
+    $tenant->domains()->create([
+        'domain' => "{$id}.flightdata.test",
+    ]);
+
+    return $tenant;
+}
+
+function initializeTenancy(?Tenant $tenant = null): Tenant
+{
+    $tenant ??= createTenant();
+
+    tenancy()->initialize($tenant);
+
+    return $tenant;
 }

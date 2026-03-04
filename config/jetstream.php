@@ -29,7 +29,7 @@ return [
      |
      */
 
-    'middleware' => ['web'],
+    'middleware' => ['web', Stancl\Tenancy\Middleware\InitializeTenancyBySubdomain::class],
 
     'auth_session' => AuthenticateSession::class,
 
